@@ -52,3 +52,7 @@ nosetests.xml
 coverage.xml
 *.cover
 .hypothesis/
+
+aggregated/
+output/
+womd_map/
