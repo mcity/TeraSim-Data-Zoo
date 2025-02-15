@@ -1,5 +1,3 @@
-# TeraSim Data Zoo
-
 <div align="center">
 <p align="center">
 
@@ -8,7 +6,7 @@
 </p>
 </div>
 
-A comprehensive toolkit for integrating various autonomous driving datasets with the TeraSim simulation platform, enabling standardized traffic scenario simulation and analysis.
+**A toolkit for standardizing autonomous driving datasets into TeraSim-compatible traffic scenarios for simulation and analysis.**
 
 ## Overview
 
