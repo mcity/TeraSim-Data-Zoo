@@ -7,7 +7,7 @@ setuptools==58.0.4
 Shapely==2.0.5
 shapelysmooth==0.1.1
 sumolib==1.19.0
-tensorflow==2.11.0
+tensorflow==2.12.1
 tensorflow_cpu==2.11.0
 torch==1.11.0
 tqdm==4.63.0
