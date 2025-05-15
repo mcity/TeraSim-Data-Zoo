@@ -14,7 +14,7 @@ from waymo_open_dataset.protos import map_pb2, scenario_pb2
 from scenparse.utils import *
 from scenparse.utils.geometry import interpolate
 from scenparse.utils.generic import ms_to_mph
-
+import numpy as np
 
 class SUMO2Waymo:
     """
@@ -60,6 +60,10 @@ class SUMO2Waymo:
         # I. parse edges
         print(f"Parsing edges...")
         for edge in edge_set:
+            # Skip crosswalks
+            if edge.allows("pedestrian") and not edge.allows("passenger"):
+                continue
+                
             if not edge.isSpecial():
                 self.normal_edges[edge.getID()] = edge
             else:
@@ -86,7 +90,7 @@ class SUMO2Waymo:
             # 4. create road line
             if have_road_lines:
                 for i in range(0, len(lanes) - 1):
-                    self.create_roadline(lanes[i], side="left")
+                    self._create_roadline(lanes[i], side="left")
 
         print("creating lanecenters for internal edges...")
         # III. internal edges
@@ -248,8 +252,41 @@ class SUMO2Waymo:
             edge_set.update([item[0] for item in edge_set2])
 
         return edge_set
+    
+    def plot_map(self, save_path: str = None, scenario_id: str = "test"):
+        # Plot all HDMap elements for visualization
+        import matplotlib.pyplot as plt
+        
+        plt.figure(figsize=(12, 8))
+        colors = ['r', 'g', 'b', 'c', 'm', 'y']
+        
+        # Plot lane centers
+        for i, (feature_id, lane_center) in enumerate(self.lane_centers.items()):
+            polyline = np.array([(p.x, p.y) for p in lane_center.polyline])
+            plt.plot(polyline[:, 0], polyline[:, 1], color=colors[0], alpha=0.5, label='lane' if i==0 else '')
+            
+        # Plot road lines
+        for i, (feature_id, road_line) in enumerate(self.road_lines.items()):
+            polyline = np.array([(p.x, p.y) for p in road_line.polyline])
+            plt.plot(polyline[:, 0], polyline[:, 1], color=colors[1], alpha=0.5, label='road_line' if i==0 else '')
+            
+        # Plot road edges    
+        for i, (feature_id, road_edge) in enumerate(self.road_edges.items()):
+            polyline = np.array([(p.x, p.y) for p in road_edge.polyline])
+            plt.plot(polyline[:, 0], polyline[:, 1], color=colors[2], alpha=0.5, label='road_edge' if i==0 else '')
+            
+        plt.title(f'HDMap Elements Visualization - {scenario_id}')
+        plt.xlabel('X (meters)')
+        plt.ylabel('Y (meters)')
+        plt.axis('equal')
+        plt.grid(True)
+        plt.legend()
+        
+        # Save plot with higher DPI for better quality
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
 
-    def save_scenario(self, scenario_id: str = "test", output_dir: str = None):
+    def save_scenario(self, scenario_id: str = "test", output_dir: str = None, plot_map: bool = False):
         """
         save the parsed data into a scenario file
         """
@@ -275,6 +312,9 @@ class SUMO2Waymo:
             feature.road_line.CopyFrom(roadline)
             scenario.map_features.append(feature)
 
+        if output_dir is not None and plot_map:
+            self.plot_map(save_path=f"{output_dir}/{scenario_id}_map.png", scenario_id=scenario_id)
+        
         serialized_scenario = scenario.SerializeToString()
         if output_dir is not None:
             output_dir = Path(output_dir)
@@ -285,3 +325,8 @@ class SUMO2Waymo:
         output_path = output_dir / f"{scenario_id}_waymo"
         with open(output_path, "wb") as f:
             f.write(serialized_scenario)
+
+if __name__ == "__main__":
+    converter = SUMO2Waymo("terasim_demo/e7078100-3635-4e58-a497-64e5528f08e8/map.net.xml")
+    converter.parse(have_road_edges=True, have_road_lines=True)
+    converter.save_scenario(scenario_id="test", output_dir="terasim_demo/e7078100-3635-4e58-a497-64e5528f08e8")
