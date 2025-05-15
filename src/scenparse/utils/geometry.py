@@ -181,20 +181,52 @@ def shape_str(shape: list[Pt]) -> str:
 def interpolate(coords: list[tuple], length: float, step: float = 0.5) -> list[tuple]:
     """
     interpolate the line 'coords'. the function does two things:
-    1. smoothing the original line using chaikin_smooth
+    1. smoothing the original line using chaikin_smooth (only for x,y plane)
     2. interpolate the line with 'step' as step size
+    3. preserve and interpolate z coordinates
     """
-
-    coords = [(pt[0], pt[1]) for pt in coords]  # only takes x, y
-    linestring = LineString(chaikin_smooth(coords))
-
+    # Extract coordinates
+    xy_coords = [(pt[0], pt[1]) for pt in coords]
+    z_coords = [pt[2] for pt in coords]
+    
+    # Smooth x,y coordinates (Chaikin only supports 2D)
+    smoothed_xy = chaikin_smooth(xy_coords)
+    linestring = LineString(smoothed_xy)
+    
+    # Calculate cumulative distances for z interpolation
+    original_distances = [0]
+    for i in range(1, len(coords)):
+        dist = ((coords[i][0] - coords[i-1][0])**2 + 
+                (coords[i][1] - coords[i-1][1])**2)**0.5
+        original_distances.append(original_distances[-1] + dist)
+    
+    # Generate new points
     points_array = np.arange(0, length, step)
-    new_coords = [substring(linestring, start_dist=i, end_dist=i) for i in points_array]
-    new_coords = [(pt.x, pt.y) for pt in new_coords]
-    # includes the end point
+    new_xy = [substring(linestring, start_dist=i, end_dist=i) for i in points_array]
+    new_xy = [(pt.x, pt.y) for pt in new_xy]
+    
+    # Add end point
     last_point = substring(linestring, start_dist=length, end_dist=length)
-    new_coords.append((last_point.x, last_point.y))
-
+    new_xy.append((last_point.x, last_point.y))
+    
+    # Interpolate z based on the actual arc length
+    new_distances = [0]
+    for i in range(1, len(new_xy)):
+        dist = ((new_xy[i][0] - new_xy[i-1][0])**2 + 
+                (new_xy[i][1] - new_xy[i-1][1])**2)**0.5
+        new_distances.append(new_distances[-1] + dist)
+    
+    # Only apply scaling if the total distance is not zero
+    if new_distances[-1] > 1e-10:  # Using small epsilon for floating point comparison
+        scale = original_distances[-1] / new_distances[-1]
+        new_distances = [d * scale for d in new_distances]
+    
+    # Interpolate z coordinates based on arc length
+    new_z = np.interp(new_distances, original_distances, z_coords)
+    
+    # Combine coordinates
+    new_coords = [(x, y, z) for (x, y), z in zip(new_xy, new_z)]
+    
     return new_coords
 
 

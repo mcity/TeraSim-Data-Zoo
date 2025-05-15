@@ -120,7 +120,7 @@ class SUMO2Waymo:
         lanecenter = map_pb2.LaneCenter()
         polyline = interpolate(lane.getShape3D(), lane.getLength())
         assert len(polyline) >= 2
-        lanecenter.polyline.extend([map_pb2.MapPoint(x=pt[0], y=pt[1]) for pt in polyline])
+        lanecenter.polyline.extend([map_pb2.MapPoint(x=pt[0], y=pt[1], z=pt[2]) for pt in polyline])
         lanecenter.speed_limit_mph = ms_to_mph(lane.getSpeed())
         lanecenter.type = 2
 
@@ -143,15 +143,38 @@ class SUMO2Waymo:
         polyline = lanecenter.polyline[1:-1]
         if len(polyline) <= 1:
             return
-        polyline = LineString([(pt.x, pt.y, pt.z) for pt in polyline])
-
+            
+        # Create 2D LineString for offset calculation
+        polyline_2d = LineString([(pt.x, pt.y) for pt in polyline])
         offset = lane.getWidth() / 2 if side == "left" else -lane.getWidth() / 2
-        boundary: LineString = polyline.offset_curve(offset, join_style=1)
-        boundary: list[tuple] = list(boundary.coords)
+        boundary_2d = polyline_2d.offset_curve(offset, join_style=1)
+        boundary_2d = list(boundary_2d.coords)
+        
+        # Interpolate z coordinates for the offset curve
+        z_coords = [pt.z for pt in polyline]
+        distances_orig = [0]
+        for i in range(1, len(polyline)):
+            dist = ((polyline[i].x - polyline[i-1].x)**2 + 
+                   (polyline[i].y - polyline[i-1].y)**2)**0.5
+            distances_orig.append(distances_orig[-1] + dist)
+            
+        distances_new = [0]
+        for i in range(1, len(boundary_2d)):
+            dist = ((boundary_2d[i][0] - boundary_2d[i-1][0])**2 + 
+                   (boundary_2d[i][1] - boundary_2d[i-1][1])**2)**0.5
+            distances_new.append(distances_new[-1] + dist)
+            
+        # Scale distances to match original
+        scale = distances_orig[-1] / distances_new[-1] if distances_new[-1] > 0 else 1
+        distances_new = [d * scale for d in distances_new]
+        
+        # Interpolate z coordinates
+        new_z = np.interp(distances_new, distances_orig, z_coords)
+        boundary = [(x, y, z) for (x, y), z in zip(boundary_2d[::-1], new_z[::-1])]
 
         roadline = map_pb2.RoadLine()
         roadline.type = 1  # default to be DASH WHITE LINE
-        roadline.polyline.extend([map_pb2.MapPoint(x=pt[0], y=pt[1]) for pt in boundary[::-1]])
+        roadline.polyline.extend([map_pb2.MapPoint(x=pt[0], y=pt[1], z=pt[2]) for pt in boundary])
 
         self.road_lines[self.feature_counter] = roadline
         self.feature_counter += 1
@@ -169,26 +192,39 @@ class SUMO2Waymo:
         polyline = lanecenter.polyline[1:-1]
         if len(polyline) <= 1:
             return
-        polyline = LineString([(pt.x, pt.y, pt.z) for pt in polyline])
-
+            
+        # Create 2D LineString for offset calculation
+        polyline_2d = LineString([(pt.x, pt.y) for pt in polyline])
         offset = lane.getWidth() / 2 if side == "left" else -lane.getWidth() / 2
         try:
-            boundaries = polyline.offset_curve(offset, join_style=1)
+            boundaries_2d = polyline_2d.offset_curve(offset, join_style=1)
         except:
             return
-        if type(boundaries) == LineString:
-            boundaries = [boundaries]
+            
+        if type(boundaries_2d) == LineString:
+            boundaries_2d = [boundaries_2d]
         else:
             print(f"{self.map_lane2featureid[lane]}, {side}")
-            boundaries = list(boundaries.geoms)
+            boundaries_2d = list(boundaries_2d.geoms)
 
-        for bd in boundaries:
-            boundary: list[tuple] = list(bd.coords)
+        for bd_2d in boundaries_2d:
+            boundary_2d = list(bd_2d.coords)
+            
+            # Interpolate z coordinates for the offset curve
+            z_coords = [pt.z for pt in polyline]
+            
+            # Interpolate z coordinates based on relative distances
+            new_z = np.interp(
+                np.linspace(0, 1, len(boundary_2d)), 
+                np.linspace(0, 1, len(z_coords)), 
+                z_coords
+            )
+            boundary = [(x, y, z) for (x, y), z in zip(boundary_2d[::-1], new_z[::-1])]
 
             roadedge = map_pb2.RoadEdge()
             roadedge.type = 2 if side == "left" else 1
             # right boundary: type == ROAD_EDGE_BOUNDARY | left boundary: type == ROAD_EDGE_MEDIAN
-            roadedge.polyline.extend([map_pb2.MapPoint(x=pt[0], y=pt[1]) for pt in boundary[::-1]])
+            roadedge.polyline.extend([map_pb2.MapPoint(x=pt[0], y=pt[1], z=pt[2]) for pt in boundary])
 
             self.road_edges[self.feature_counter] = roadedge
             self.feature_counter += 1
@@ -253,7 +289,7 @@ class SUMO2Waymo:
 
         return edge_set
     
-    def plot_map(self, save_path: str = None, scenario_id: str = "test"):
+    def plot_map(self, save_path: str = None, scenario_id: str = "test", plot_map: bool = False):
         # Plot all HDMap elements for visualization
         import matplotlib.pyplot as plt
         
@@ -286,12 +322,7 @@ class SUMO2Waymo:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
 
-    def save_scenario(self, scenario_id: str = "test", output_dir: str = None, plot_map: bool = False):
-        """
-        save the parsed data into a scenario file
-        """
-
-        print("saving Waymo scenario file...")
+    def convert_to_scenario(self, scenario_id: str = "test"):
         scenario = scenario_pb2.Scenario()
         scenario.scenario_id = scenario_id
         for id, lanecenter in self.lane_centers.items():
@@ -311,6 +342,16 @@ class SUMO2Waymo:
             feature.id = id
             feature.road_line.CopyFrom(roadline)
             scenario.map_features.append(feature)
+
+        return scenario
+
+    def save_scenario(self, scenario_id: str = "test", output_dir: str = None, plot_map: bool = False):
+        """
+        save the parsed data into a scenario file
+        """
+
+        print("saving Waymo scenario file...")
+        scenario = self.convert_to_scenario(scenario_id=scenario_id)
 
         if output_dir is not None and plot_map:
             self.plot_map(save_path=f"{output_dir}/{scenario_id}_map.png", scenario_id=scenario_id)
