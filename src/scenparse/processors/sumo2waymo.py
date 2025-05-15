@@ -34,12 +34,14 @@ class SUMO2Waymo:
         # SUMO stuffs
         self.normal_edges: dict[str, Edge] = {}
         self.internal_edges: dict[str, Edge] = {}
+        self.crosswalk_edges: dict[str, Edge] = {}
 
         # Waymo stuffs
         self.feature_counter: int = 1
         self.lane_centers: dict = {}  # feature id, LaneCenter
         self.road_lines: dict = {}  # feature id, RoadLine
         self.road_edges: dict = {}  # feature id, RoadEdge
+        self.crosswalks: dict = {}  # feature id, Crosswalk
 
         self.map_lane2featureid: dict = {}  # Lane -> feature_id
 
@@ -62,8 +64,10 @@ class SUMO2Waymo:
         for edge in edge_set:
             # Skip crosswalks
             if edge.allows("pedestrian") and not edge.allows("passenger"):
-                continue
-                
+                if edge.getFunction() == "crossing":
+                    self.crosswalk_edges[edge.getID()] = edge
+                else:
+                    continue
             if not edge.isSpecial():
                 self.normal_edges[edge.getID()] = edge
             else:
@@ -112,6 +116,37 @@ class SUMO2Waymo:
                 for con in conns:
                     assert type(con) == Connection
                     self._set_connectionship(con.getFromLane(), con.getToLane())
+
+        # IV. crosswalks
+        print("creating crosswalks...")
+        for _, edge in self.crosswalk_edges.items():
+            # Create crosswalk polygon from edge shape
+            crosswalk = map_pb2.Crosswalk()
+            center_line = edge.getShape()
+            lane_width = edge.getLanes()[0].getWidth()  # Get width from first lane
+            # Create parallel offset lines on both sides
+            left_line = LineString(center_line).parallel_offset(lane_width/2, 'left')
+            right_line = LineString(center_line).parallel_offset(lane_width/2, 'right')
+            # Combine into polygon
+            polygon = list(left_line.coords) + list(reversed(right_line.coords))
+
+            z_default = edge.getShape3D()[0][2]
+            
+            # Convert 2D polygon points to 3D by adding z coordinate
+            polygon_3d = []
+            for point in polygon:
+                # Get z coordinate from the first point if available, otherwise use 0
+                z = point[2] if len(point) > 2 else z_default
+                polygon_3d.append(map_pb2.MapPoint(x=point[0], y=point[1], z=z))
+            
+            crosswalk.polygon.extend(polygon_3d)
+            
+            # Store crosswalk in map features
+            self.crosswalks[self.feature_counter] = crosswalk
+            self.feature_counter += 1
+            
+            print(f"crosswalk {self.feature_counter-1} created")
+            
 
     def _create_lanecenter(self, lane: Lane):
         """
@@ -341,6 +376,12 @@ class SUMO2Waymo:
             feature = map_pb2.MapFeature()
             feature.id = id
             feature.road_line.CopyFrom(roadline)
+            scenario.map_features.append(feature)
+
+        for id, crosswalk in self.crosswalks.items():
+            feature = map_pb2.MapFeature()
+            feature.id = id
+            feature.crosswalk.CopyFrom(crosswalk)
             scenario.map_features.append(feature)
 
         return scenario
