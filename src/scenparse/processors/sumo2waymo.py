@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Union
 
-from shapely import LineString
+from shapely import LineString, Point
 
 from sumolib.net import *
 from sumolib.net.connection import Connection
@@ -42,7 +42,7 @@ class SUMO2Waymo:
         self.road_lines: dict = {}  # feature id, RoadLine
         self.road_edges: dict = {}  # feature id, RoadEdge
         self.crosswalks: dict = {}  # feature id, Crosswalk
-
+        # self.junctions: dict = {}  # feature id, Junction
         self.map_lane2featureid: dict = {}  # Lane -> feature_id
 
     def parse(self, starter_edges: list[str] = None, have_road_edges=False, have_road_lines=False):
@@ -79,28 +79,33 @@ class SUMO2Waymo:
         for _, edge in self.normal_edges.items():
             # 1. create lanecenter for each lane
             lanes: list[Lane] = edge.getLanes()
-            for lane in lanes:
+            # Filter out sidewalk lanes
+            vehicle_lanes = [lane for lane in lanes if not (lane.allows("pedestrian") and not lane.allows("passenger"))]
+            
+            for lane in vehicle_lanes:
                 self._create_lanecenter(lane)
 
             # 2. add neighbor information between them
-            for i in range(0, len(lanes) - 1):
-                self._set_neighborship(lanes[i], lanes[i + 1])
+            for i in range(0, len(vehicle_lanes) - 1):
+                self._set_neighborship(vehicle_lanes[i], vehicle_lanes[i + 1])
 
             # 3. create road edge for this edge
-            if have_road_edges:
-                self._create_roadedge(lanes[0], side="right")
-                self._create_roadedge(lanes[-1], side="left")
+            if have_road_edges and len(vehicle_lanes) > 0:
+                self._create_roadedge(vehicle_lanes[0], side="right")
+                self._create_roadedge(vehicle_lanes[-1], side="left")
 
             # 4. create road line
             if have_road_lines:
-                for i in range(0, len(lanes) - 1):
-                    self._create_roadline(lanes[i], side="left")
+                for i in range(0, len(vehicle_lanes) - 1):
+                    self._create_roadline(vehicle_lanes[i], side="left")
 
         print("creating lanecenters for internal edges...")
         # III. internal edges
         for _, edge in self.internal_edges.items():
             # 1. create lanecenter for each lane
             lanes: list[Lane] = edge.getLanes()
+            # Filter out lanes that only allow pedestrians
+            lanes = [lane for lane in lanes if not (lane.allows("pedestrian") and not lane.allows("passenger"))]
             for lane in lanes:
                 self._create_lanecenter(lane)
 
@@ -146,7 +151,55 @@ class SUMO2Waymo:
             self.feature_counter += 1
             
             print(f"crosswalk {self.feature_counter-1} created")
-            
+
+        # V. junctions (nodes)
+        print("creating junctions...")
+        for node in self.sumonet.getNodes():
+            self._create_junction_outline_shape(node)
+
+    def _create_junction_outline_shape(self, node: Node):
+        """
+        given a sumo node, create a closed polyline of the node's outline
+        """
+        node_shape = node.getShape3D()
+        roadedge = map_pb2.RoadEdge()
+        # Make a closed polyline by appending the first point to the end
+        if len(node_shape) > 0:
+            node_shape = list(node_shape)  # Convert to list if it's not already
+            node_shape.append(node_shape[0])  # Append first point to end
+
+        # get all connection edges of this node
+        all_conns: list[Connection] = node.getOutgoing() + node.getIncoming()
+        all_conns_polyline_start_ending_points = []
+        for edge in all_conns:
+            edge_shape = edge.getShape3D()
+            all_conns_polyline_start_ending_points.append(edge_shape[0])
+            all_conns_polyline_start_ending_points.append(edge_shape[-1])
+        
+        # Create polylines from node_shape points (two points per polyline)
+        external_polylines = []
+        for i in range(len(node_shape) - 1):
+            polyline = [node_shape[i], node_shape[i + 1]]
+            # Check if this polyline overlaps with any point in node_shape_polyline_list
+            is_internal = False
+            for pt in all_conns_polyline_start_ending_points:
+                # Calculate distance from point to line segment
+                line = LineString([(polyline[0][0], polyline[0][1]), (polyline[1][0], polyline[1][1])])
+                point = Point(pt[0], pt[1])
+                if line.distance(point) < 0.1:
+                    is_internal = True
+                    break
+            if not is_internal:
+                external_polylines.append(polyline)
+
+        external_polylines = [node_shape]
+
+        # right boundary: type == ROAD_EDGE_BOUNDARY | left boundary: type == ROAD_EDGE_MEDIAN
+        for polyline in external_polylines:
+            roadedge = map_pb2.RoadEdge()
+            roadedge.polyline.extend([map_pb2.MapPoint(x=pt[0], y=pt[1], z=pt[2]) for pt in polyline])
+            self.road_edges[self.feature_counter] = roadedge
+            self.feature_counter += 1
 
     def _create_lanecenter(self, lane: Lane):
         """
@@ -227,6 +280,23 @@ class SUMO2Waymo:
         polyline = lanecenter.polyline[1:-1]
         if len(polyline) <= 1:
             return
+            
+        # Check if the adjacent lane is a sidewalk
+        edge = lane.getEdge()
+        lanes = edge.getLanes()
+        lane_index = lanes.index(lane)
+        
+        # For right side, check if next lane is sidewalk
+        if side == "right" and lane_index < len(lanes) - 1:
+            next_lane = lanes[lane_index + 1]
+            if next_lane.allows("pedestrian") and not next_lane.allows("passenger"):
+                return
+                
+        # For left side, check if previous lane is sidewalk
+        if side == "left" and lane_index > 0:
+            prev_lane = lanes[lane_index - 1]
+            if prev_lane.allows("pedestrian") and not prev_lane.allows("passenger"):
+                return
             
         # Create 2D LineString for offset calculation
         polyline_2d = LineString([(pt.x, pt.y) for pt in polyline])
