@@ -154,6 +154,8 @@ class SUMO2Waymo:
 
         # V. junctions (nodes)
         print("creating junctions...")
+        all_node_types = [node.getType() for node in self.sumonet.getNodes()]
+        print(all_node_types)
         for node in self.sumonet.getNodes():
             self._create_junction_outline_shape(node)
 
@@ -176,21 +178,106 @@ class SUMO2Waymo:
             all_conns_polyline_start_ending_points.append(edge_shape[0])
             all_conns_polyline_start_ending_points.append(edge_shape[-1])
         
-        # Create polylines from node_shape points (two points per polyline)
-        external_polylines = []
-        for i in range(len(node_shape) - 1):
-            polyline = [node_shape[i], node_shape[i + 1]]
-            # Check if this polyline overlaps with any point in node_shape_polyline_list
-            is_internal = False
-            for pt in all_conns_polyline_start_ending_points:
-                # Calculate distance from point to line segment
-                line = LineString([(polyline[0][0], polyline[0][1]), (polyline[1][0], polyline[1][1])])
-                point = Point(pt[0], pt[1])
-                if line.distance(point) < 0.1:
-                    is_internal = True
-                    break
-            if not is_internal:
-                external_polylines.append(polyline)
+        if node.getType() == "priority" or node.getType() == "priority_stop": # works for normal roundabouts and pure connections
+            # Create polylines from node_shape points (two points per polyline)
+            external_polylines = []
+            for i in range(len(node_shape) - 1):
+                polyline = [node_shape[i], node_shape[i + 1]]
+                # Check if this polyline overlaps with any point in node_shape_polyline_list
+                is_internal = False
+                for pt in all_conns_polyline_start_ending_points:
+                    # Calculate distance from point to line segment
+                    line = LineString([(polyline[0][0], polyline[0][1]), (polyline[1][0], polyline[1][1])])
+                    point = Point(pt[0], pt[1])
+                    if line.distance(point) < 0.1:
+                        is_internal = True
+                        break
+                if not is_internal:
+                    external_polylines.append(polyline)
+        elif node.getType() == "traffic_light" or node.getType() == "allway_stop":
+            all_connections = node.getConnections()
+            all_right_connections = [conn for conn in all_connections if conn.getDirection() == "r" or conn.getDirection() == "R"]
+            right_connection_lanes = [conn.getFromLane() for conn in all_right_connections]
+            right_connection_internal_lanes = [lane for lane in right_connection_lanes if lane.getID().startswith(":")]
+            # right_connection_internal_lanes = [lane for lane in right_connection_lanes if lane.getID() in node.getInternal()]
+            right_connection_shapes = [lane.getShape3D() for lane in right_connection_internal_lanes]
+            right_connection_polylines = [LineString(shape) for shape in right_connection_shapes]
+            right_connection_polyline_right_half_width = [polyline.parallel_offset(lane.getWidth()/2, 'right') for polyline, lane in zip(right_connection_polylines, right_connection_internal_lanes)]
+            if "NODE_17" in node.getID():
+                self.plot_right_line_and_boundary(node.getID(), node_shape, right_connection_polyline_right_half_width)
+            external_polylines = [[(x,y) for x,y in zip(*polyline.xy)] for polyline in right_connection_polyline_right_half_width]
+            for i, polyline in enumerate(external_polylines):
+                for j, pt in enumerate(polyline):
+                    external_polylines[i][j] = (pt[0], pt[1], right_connection_shapes[i][j][2])
+        else:
+            external_polylines = [node_shape]
+
+        # right boundary: type == ROAD_EDGE_BOUNDARY | left boundary: type == ROAD_EDGE_MEDIAN
+        for polyline in external_polylines:
+            roadedge = map_pb2.RoadEdge()
+            roadedge.polyline.extend([map_pb2.MapPoint(x=pt[0], y=pt[1], z=pt[2]) for pt in polyline])
+            self.road_edges[self.feature_counter] = roadedge
+            self.feature_counter += 1
+
+    def plot_right_line_and_boundary(self, node_id: str, node_shape: list[tuple], connection_polylines: list[LineString]):
+        import matplotlib.pyplot as plt
+        plt.figure()
+        plt.plot(*zip(*node_shape), 'r-', label='Node Shape') 
+        for polyline in connection_polylines:
+            plt.plot(*polyline.xy, 'b-', label='Connection Polylines')
+        plt.legend()
+        plt.axis('equal')
+        plt.savefig(f"{node_id}_right_line_and_boundary.png")
+        plt.close()
+
+    def _create_junction_outline_shape_new(self, node: Node):
+        """
+        given a sumo node, create a closed polyline of the node's outline
+        """
+        node_shape = node.getShape3D()
+        roadedge = map_pb2.RoadEdge()
+
+        # get all internal lanes of this node
+        internal_lanes = node.getInternal()
+        # Get lane object from lane id
+        lane_objects = []
+        for lane_id in internal_lanes:
+            lane = self.sumonet.getLane(lane_id)
+            if lane is not None:
+                lane_objects.append(lane)
+        if "clusterJ0_NODE_3" in node.getID():
+            print("aaa")
+        
+
+        # Make a closed polyline by appending the first point to the end
+        if len(node_shape) > 0:
+            node_shape = list(node_shape)  # Convert to list if it's not already
+            node_shape.append(node_shape[0])  # Append first point to end
+
+        node_connections = node.getConnections()
+        right_node_connections = []
+        for conn in node_connections:
+            direction = conn.getDirection()
+            if direction == "r" or "R":
+                right_node_connections.append(conn)
+        
+
+
+        # all_connection_edge_shapes_union_polygon = Polygon(all_edge_polygons_union)
+        if "NODE_18" in node.getID():
+            print("bbb")
+            import matplotlib.pyplot as plt
+            plt.figure()
+            # plt.plot(*zip(*node_shape), 'r-', label='Node Shape')
+            x, y = all_edge_polygons_union.exterior.xy
+            plt.plot(x, y, 'b-', label='Connection Edges Union')
+            x, y = all_internal_lanes_polygons_union.exterior.xy
+            plt.plot(x, y, 'g-', label='Internal Lanes Union')
+            plt.legend()
+            plt.axis('equal')
+            plt.savefig(f"{node.getID()}_connection_edges_union.png")
+            plt.close()
+        
 
         external_polylines = [node_shape]
 
@@ -479,6 +566,7 @@ class SUMO2Waymo:
             f.write(serialized_scenario)
 
 if __name__ == "__main__":
+
     converter = SUMO2Waymo("terasim_demo/e7078100-3635-4e58-a497-64e5528f08e8/map.net.xml")
     converter.parse(have_road_edges=True, have_road_lines=True)
     converter.save_scenario(scenario_id="test", output_dir="terasim_demo/e7078100-3635-4e58-a497-64e5528f08e8")
