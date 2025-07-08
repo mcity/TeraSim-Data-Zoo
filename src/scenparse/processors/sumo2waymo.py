@@ -15,6 +15,7 @@ from scenparse.utils import *
 from scenparse.utils.geometry import interpolate
 from scenparse.utils.generic import ms_to_mph
 import numpy as np
+import json
 
 class SUMO2Waymo:
     """
@@ -27,9 +28,11 @@ class SUMO2Waymo:
     1. Instantiate a class object ``converter = SUMO2Waymo(sumo_file)``.
     """
 
-    def __init__(self, sumo_file) -> None:
+    def __init__(self, sumo_file, verbose: bool = False) -> None:
+        self.verbose = verbose
 
         self.sumonet: Net = readNet(sumo_file, withInternal=True)
+        self.sumo_file_path = sumo_file
 
         # SUMO stuffs
         self.normal_edges: dict[str, Edge] = {}
@@ -44,6 +47,7 @@ class SUMO2Waymo:
         self.crosswalks: dict = {}  # feature id, Crosswalk
         # self.junctions: dict = {}  # feature id, Junction
         self.map_lane2featureid: dict = {}  # Lane -> feature_id
+        self.lane_center2sumo_lane: dict = {}  # lane_center_feature_id -> sumo lane id
 
     def parse(self, starter_edges: list[str] = None, have_road_edges=False, have_road_lines=False):
         """
@@ -150,14 +154,21 @@ class SUMO2Waymo:
             self.crosswalks[self.feature_counter] = crosswalk
             self.feature_counter += 1
             
-            print(f"crosswalk {self.feature_counter-1} created")
+            if self.verbose:
+                print(f"crosswalk {self.feature_counter-1} created")
 
         # V. junctions (nodes)
         print("creating junctions...")
         all_node_types = [node.getType() for node in self.sumonet.getNodes()]
-        print(all_node_types)
+        if self.verbose:
+            print(all_node_types)
         for node in self.sumonet.getNodes():
             self._create_junction_outline_shape(node)
+
+        # save lane_center2sumo_lane
+        print(f"saving mapping from lane_center_feature_id to sumo lane id to {self.sumo_file_path.parent / 'lane_center2sumo_lane.json'}")
+        with open(self.sumo_file_path.parent / "lane_center2sumo_lane.json", "w") as f:
+            json.dump(self.lane_center2sumo_lane, f)
 
     def _create_junction_outline_shape(self, node: Node):
         """
@@ -302,8 +313,10 @@ class SUMO2Waymo:
         self.map_lane2featureid[lane] = self.feature_counter
         self.lane_centers[self.feature_counter] = lanecenter
         self.feature_counter += 1
+        self.lane_center2sumo_lane[self.feature_counter-1] = lane.getID()
 
-        print(f"lanecenter {self.feature_counter-1} created")
+        if self.verbose:
+            print(f"lanecenter {self.feature_counter-1} created from sumo lane id: {lane.getID()}")
 
     def _create_roadline(self, lane: Lane, side: str):
         """
@@ -396,7 +409,8 @@ class SUMO2Waymo:
         if type(boundaries_2d) == LineString:
             boundaries_2d = [boundaries_2d]
         else:
-            print(f"{self.map_lane2featureid[lane]}, {side}")
+            if self.verbose:
+                print(f"{self.map_lane2featureid[lane]}, {side}")
             boundaries_2d = list(boundaries_2d.geoms)
 
         for bd_2d in boundaries_2d:
