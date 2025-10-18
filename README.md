@@ -7,6 +7,8 @@
 </div>
 
 **A toolkit for standardizing autonomous driving datasets into TeraSim-compatible traffic scenarios for simulation and analysis.**
+> **This repository has been archived.**  
+> Further development continues at [mcity/TeraSim](https://github.com/mcity/TeraSim).
 
 ## Overview
 
